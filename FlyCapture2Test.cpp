@@ -18,10 +18,11 @@
 #include <errno.h>
 #include <python2.7/Python.h>
 #include <math.h>
+#include <queue>
 
 #define show_image
 #define image_interval 300
-#define core 14
+#define core 12
 #define divider 12 
 //#define serial_t
 //#define local_test
@@ -186,6 +187,9 @@ IplImage *grey2[core],*dst[core],*shw_tmp[core];
 IplImage ipltmp[core];
 FlyCapture2::Image convertedImage[core];
 
+static char svr_in_buf[100];
+queue<char*> cam_out_buf;
+char cam_out_once[100];
 
 void* image_processing(void* arg)
 {
@@ -195,7 +199,7 @@ void* image_processing(void* arg)
 	zbar::ImageScanner scanner;  
 	scanner.set_config(ZBAR_NONE, ZBAR_CFG_ENABLE, 1);   
 	//FlyCapture2::Image convertedImage;
-
+	
 	while(!local_exit)
 	{
 		pthread_mutex_lock(&global_exit_mtx);
@@ -350,7 +354,10 @@ void* image_processing(void* arg)
 		
 
 		//Notice: if contours.size()==0, then close=close_tmp(ROI).clone will cause "Segment fault"
-		Mat img_merge;		
+		Mat img_merge;	
+		Point2f pts[1024][4];
+		int local_decoded = 0;	
+				
 		if(ROI_list.size()<=0)
 		{
 			close=close_tmp.clone();
@@ -361,7 +368,6 @@ void* image_processing(void* arg)
 		{
 			img_merge.create(cvSize(close_tmp.cols+20,close_tmp.rows+20),CV_8UC1);
 			img_merge = Scalar::all(0);
-				
 			for(int j=0;j<ROI_list.size();j++)
 			{
 				close=close_tmp(ROI_list[j]).clone();
@@ -395,13 +401,12 @@ void* image_processing(void* arg)
 				//uchar *raw = (uchar *)shw_tmp[count]->imageData;   		
 				//uchar *raw = (uchar *)dst[count]->imageData;
 				
-				char file_name[20];
-				
 				//pthread_mutex_lock(&img_cnt_mtx);	
 				//if(local_imageCnt>=1500)
 				//	global_exit=1;
 				//pthread_mutex_unlock(&img_cnt_mtx);
-				
+			
+				char file_name[20];
 				sprintf(file_name,"./image/%d.bmp",local_imageCnt);		
 				//cvSaveImage(file_name,shw_tmp[count]);		
 				imwrite(file_name,close);
@@ -418,24 +423,31 @@ void* image_processing(void* arg)
 				zbar::Image image = zbar::Image(width, height, "Y800", raw, width * height);
 				// scan the image for barcodes   
 				int n = scanner.scan(image);
-			
-				int local_decoded = 0;	
+				
 				// extract results	
+				vector<Point> vp;	
 				for(zbar::Image::SymbolIterator symbol = image.symbol_begin();symbol != image.symbol_end();++symbol)
-				{
-					vector<Point> vp;
-					local_decoded = 1;
+				{		
 					pthread_mutex_lock(&img_cnt_mtx);
 					//Send the message, remain true until it is handled(sent through uart)
 					decoded=1;
 					decodeCnt++;
 					int decodeCnt_tmp = decodeCnt;
 					pthread_mutex_unlock(&img_cnt_mtx);
+				
+					char qrdata[100];
+					memset(qrdata,0,sizeof(qrdata));
+					strcpy(qrdata,symbol->get_data().data());  
+					strcat(qrdata,"\n");
 					
 					pthread_mutex_lock(&img_cnt_mtx);
 					pthread_mutex_lock(&printf_mtx); 	
-					if(local_exit==0)
-						cout <<local_imageCnt<< " decoded "<<decodeCnt<<" " << symbol->get_type_name() << " symbol \"" << symbol->get_data() << "\" " << endl;   
+					//if(local_exit==0)
+						//cout <<local_imageCnt<< " decoded "<<decodeCnt<<" " << symbol->get_type_name() << " symbol \"" << symbol->get_data() << "\" " << endl;  		
+					if(strcmp(qrdata,cam_out_once))
+					{	
+						cam_out_buf.push(qrdata);	 
+					}
 					pthread_mutex_unlock(&printf_mtx);
 					pthread_mutex_unlock(&img_cnt_mtx);
 					
@@ -445,36 +457,36 @@ void* image_processing(void* arg)
 					{   
 						vp.push_back(Point(symbol->get_location_x(i),symbol->get_location_y(i)));   
 					}   
-					RotatedRect r = minAreaRect(vp);   
-					Point2f pts[4];   
-					r.points(pts);   
+					RotatedRect r = minAreaRect(vp);     
+					r.points(pts[local_decoded]);
+					local_decoded++;   
 					for(int i=0;i<4;i++)
 					{   
-						line(grey[count],pts[i],pts[(i+1)%4],Scalar(255,0,0),3);   
+						line(grey[count],pts[local_decoded][i],pts[local_decoded][(i+1)%4],Scalar(255,0,0),3);   
 					}			
-				}	
-				if(local_decoded==0)
-				{
-					pthread_mutex_lock(&img_cnt_mtx);
-					pthread_mutex_lock(&printf_mtx);	
-					//cout<<local_imageCnt<<" failure\n";
-					pthread_mutex_unlock(&printf_mtx);
-					pthread_mutex_unlock(&img_cnt_mtx);
-				}
-				else
-				{
-					pthread_mutex_lock(&img_cnt_mtx);
-					pthread_mutex_lock(&printf_mtx);	
-					//cout<<local_imageCnt<<" succeed\n";
-					pthread_mutex_unlock(&printf_mtx);
-					pthread_mutex_unlock(&img_cnt_mtx);
-				}
+				}		
 			}
+			if(local_decoded==0)
+			{
+				pthread_mutex_lock(&img_cnt_mtx);
+				pthread_mutex_lock(&printf_mtx);	
+				//cout<<local_imageCnt<<" failure\n";
+				pthread_mutex_unlock(&printf_mtx);
+				pthread_mutex_unlock(&img_cnt_mtx);
+			}
+			else
+			{
+				pthread_mutex_lock(&img_cnt_mtx);
+				pthread_mutex_lock(&printf_mtx);	
+				//cout<<local_imageCnt<<" succeed\n";
+				pthread_mutex_unlock(&printf_mtx);
+				pthread_mutex_unlock(&img_cnt_mtx);
+			}		
 		}	
 	#ifdef show_image  
 		if(count==0)
-		{	
-			//cvShowImage("MyVideo",dst[count]); 
+		{
+		//cvShowImage("MyVideo",dst[count]); 
 			imshow("MyVideo",img_merge);
 			cvCreateTrackbar("cp_blk_size","MyVideo",&cp_blk_size,50,NULL);
 			cvCreateTrackbar("cp_blk_par","MyVideo",&cp_blk_par,100,NULL);
@@ -487,6 +499,72 @@ void* image_processing(void* arg)
 	#endif
 	}
 }
+
+void* server_fifo(void* arg)
+{
+	const char* in_filename = "./svr_in";
+	const char*  out_filename = "./cam_out";
+	int in_fd;
+	int out_fd;
+	
+	if((out_fd = open(out_filename,O_WRONLY))<0)
+	{
+		perror("open output fifo error");
+		mkfifo(out_filename,666);
+		out_fd = open(out_filename,O_WRONLY);
+	}
+	if((in_fd = open(in_filename,O_RDONLY))<0)
+	{
+		perror("open input fifo error");
+		mkfifo(in_filename,666);
+		in_fd = open(in_filename,O_RDONLY);
+	}	
+	clock_t start,finish;
+	struct timespec begin,end;
+	double fifo_interval=0;
+	char no_qr_out[100];
+	memset(no_qr_out,0,sizeof(no_qr_out));
+	strcpy(no_qr_out,"no qr code\n");
+	cout<<fifo_interval<<endl;
+	memset(cam_out_once,0,sizeof(cam_out_once));
+	while(1)
+	{
+		if(global_exit==1)
+			break;
+		start=clock();
+		clock_gettime(CLOCK_MONOTONIC,&begin);
+			
+		do
+		{	
+			clock_gettime(CLOCK_MONOTONIC,&end);
+			fifo_interval=(double)((end.tv_sec-begin.tv_sec)+(double)(end.tv_nsec-begin.tv_nsec)/1000000000);
+		}while(abs(fifo_interval)<1 && cam_out_buf.empty());
+		finish = clock();
+			
+		if(!cam_out_buf.empty())
+		{	
+			pthread_mutex_lock(&img_cnt_mtx);
+			strcpy(cam_out_once,cam_out_buf.front());
+			cam_out_buf.pop();		
+			pthread_mutex_unlock(&img_cnt_mtx);
+			write(out_fd,cam_out_once,sizeof(cam_out_once));		
+		}
+		else
+			write(out_fd,no_qr_out,sizeof(no_qr_out));
+		
+		memset(svr_in_buf,0,sizeof(svr_in_buf));
+		cout<<"Retrieving server data..."<<endl;	
+		int rd_num = read(in_fd, svr_in_buf,sizeof(svr_in_buf));
+		if(rd_num==0)
+			sleep(1);  // read FIFO if ready to read	
+		
+		pthread_mutex_lock(&printf_mtx);
+		cout<<svr_in_buf<<endl;
+		pthread_mutex_unlock(&printf_mtx);	}	
+}
+
+
+
 
 char wr_buf[100];
 int serial_fd;
@@ -549,6 +627,7 @@ void set_blocking (int fd, int should_block)
         if (tcsetattr (fd, TCSANOW, &tty) != 0)
                 printf ("error %d setting term attributes", errno);
 }
+
 
 void* listen_serial(void* fd_s)
 {
@@ -787,7 +866,8 @@ int RunSingleCamera( PGRGuid guid )
 		pthread_create(&id_s_wr,NULL,write_serial,&serial_fd);
 	}
 #endif
-		
+	pthread_t id_svr;
+	pthread_create(&id_svr,NULL,server_fifo,NULL);
 	//pthread_mutex_lock(&img_reading_mtx);
 	for(int cnt=0;cnt<core;cnt++){ 
 		tmp[cnt]=cnt;
@@ -814,8 +894,8 @@ int RunSingleCamera( PGRGuid guid )
 			start=clock();
 			clock_gettime(CLOCK_MONOTONIC,&begin);
 		} 
-
-		if(tmp_decodeCnt>=image_interval || tmp_imageCnt>=1500)
+		if(0)
+		//if(tmp_decodeCnt>=image_interval || tmp_imageCnt>=1500)
 		{
 			finish=clock();
 			clock_gettime(CLOCK_MONOTONIC,&end);
