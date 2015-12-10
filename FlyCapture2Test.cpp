@@ -25,7 +25,7 @@
 #define core 12
 #define divider 12 
 //#define serial_t
-//#define local_test
+#define local_test
 #define shrink 1
 #define spand 1
 
@@ -443,8 +443,8 @@ void* image_processing(void* arg)
 					pthread_mutex_lock(&img_cnt_mtx);
 					pthread_mutex_lock(&printf_mtx); 	
 					//if(local_exit==0)
-						//cout <<local_imageCnt<< " decoded "<<decodeCnt<<" " << symbol->get_type_name() << " symbol \"" << symbol->get_data() << "\" " << endl;  		
-					if(strcmp(qrdata,cam_out_once))
+					//	cout <<local_imageCnt<< " decoded "<<decodeCnt<<" " << symbol->get_type_name() << " symbol \"" << symbol->get_data() << "\" " << endl;  		
+					if((!cam_out_buf.empty() && strcmp(qrdata,cam_out_buf.back())) || (cam_out_buf.empty() && strcmp(qrdata,cam_out_once)))
 					{	
 						cam_out_buf.push(qrdata);	 
 					}
@@ -525,7 +525,7 @@ void* server_fifo(void* arg)
 	char no_qr_out[100];
 	memset(no_qr_out,0,sizeof(no_qr_out));
 	strcpy(no_qr_out,"no qr code\n");
-	cout<<fifo_interval<<endl;
+	
 	memset(cam_out_once,0,sizeof(cam_out_once));
 	while(1)
 	{
@@ -533,19 +533,23 @@ void* server_fifo(void* arg)
 			break;
 		start=clock();
 		clock_gettime(CLOCK_MONOTONIC,&begin);
-			
+		static bool buf_is_empty = true;
 		do
 		{	
 			clock_gettime(CLOCK_MONOTONIC,&end);
 			fifo_interval=(double)((end.tv_sec-begin.tv_sec)+(double)(end.tv_nsec-begin.tv_nsec)/1000000000);
-		}while(abs(fifo_interval)<1 && cam_out_buf.empty());
+			pthread_mutex_lock(&img_cnt_mtx);
+			buf_is_empty = cam_out_buf.empty();
+			pthread_mutex_unlock(&img_cnt_mtx);
+		}while(abs(fifo_interval)<1 && buf_is_empty);
 		finish = clock();
 			
-		if(!cam_out_buf.empty())
+		if(!buf_is_empty)
 		{	
 			pthread_mutex_lock(&img_cnt_mtx);
 			strcpy(cam_out_once,cam_out_buf.front());
-			cam_out_buf.pop();		
+			cam_out_buf.pop();	
+			buf_is_empty = cam_out_buf.empty();
 			pthread_mutex_unlock(&img_cnt_mtx);
 			write(out_fd,cam_out_once,sizeof(cam_out_once));		
 		}
