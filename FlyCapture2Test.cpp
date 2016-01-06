@@ -21,11 +21,12 @@
 #include <queue>
 
 #define show_image
-#define image_interval 300
-#define core 12
+#define image_interval 500
+#define core 6
 #define divider 12 
 //#define serial_t
-#define local_test
+//#define local_test
+//#define calib_test
 #define shrink 1
 #define spand 1
 
@@ -46,7 +47,8 @@ int cp_blk_par=25;
 int blk_size=3;
 int blk_par=20; 
 
-const int AREA_SIZE=18000;
+const int PIXELS=320;
+const int AREA_SIZE=(PIXELS/2)*(PIXELS/2);
 const double RATIO=0.7;
 
 typedef struct rect
@@ -232,7 +234,12 @@ void* image_processing(void* arg)
 		imageCnt = (imageCnt+1)%1510;
 		int local_imageCnt=imageCnt;
 		pthread_mutex_unlock(&img_cnt_mtx);
-		
+	#ifdef calib_test	
+		char file_name[20];
+		sprintf(file_name,"./image/%d.jpg",local_imageCnt);		
+		//cvSaveImage(file_name,grey[count]);		
+		imwrite(file_name,grey[count]);
+	#endif
 		//Read form local picture.	
 	#ifdef local_test		
 		char read_image[20];
@@ -270,13 +277,14 @@ void* image_processing(void* arg)
 		int block = (dst[count]->width/divider)%2==0?dst[count]->width/divider+1:dst[count]->width/divider;
 		
 		//----------------------------------cropping the target area--------------------------------------//
-		cvAdaptiveThreshold(grey2[count],dst[count],255,CV_ADAPTIVE_THRESH_MEAN_C,CV_THRESH_BINARY_INV,block,cp_blk_par);	
+		cvAdaptiveThreshold(grey2[count],dst[count],255,CV_ADAPTIVE_THRESH_MEAN_C,CV_THRESH_BINARY_INV,block,cp_blk_par);		
 		Mat crop(dst[count],true);	
 		Mat se1(cp_blk_size,cp_blk_size,CV_8U,Scalar(1));
 		morphologyEx(crop,crop,MORPH_CLOSE,se1);
 		Mat crop1 = crop.clone();
 	
 		cvAdaptiveThreshold(grey2[count],dst[count],255,CV_ADAPTIVE_THRESH_MEAN_C,CV_THRESH_BINARY,block,blk_par);		
+	
 		Mat close_tmp(dst[count],true);	
 		Mat se2(blk_size,blk_size,CV_8U,Scalar(1));
 		morphologyEx(close_tmp,close_tmp,MORPH_CLOSE,se2);
@@ -405,12 +413,13 @@ void* image_processing(void* arg)
 				//if(local_imageCnt>=1500)
 				//	global_exit=1;
 				//pthread_mutex_unlock(&img_cnt_mtx);
-			
+				
+			#ifndef calib_test	
 				char file_name[20];
 				sprintf(file_name,"./image/%d.bmp",local_imageCnt);		
 				//cvSaveImage(file_name,shw_tmp[count]);		
 				imwrite(file_name,close);
-
+			#endif
 				
 				//PyObject *pModule = NULL;
 				//PyObject *pFunc = NULL;
@@ -442,8 +451,8 @@ void* image_processing(void* arg)
 					
 					pthread_mutex_lock(&img_cnt_mtx);
 					pthread_mutex_lock(&printf_mtx); 	
-					//if(local_exit==0)
-					//	cout <<local_imageCnt<< " decoded "<<decodeCnt<<" " << symbol->get_type_name() << " symbol \"" << symbol->get_data() << "\" " << endl;  		
+					if(local_exit==0)
+						cout <<local_imageCnt<< " decoded "<<decodeCnt<<" " << symbol->get_type_name() << " symbol \"" << symbol->get_data() << "\" " << endl;  		
 					if((!cam_out_buf.empty() && strcmp(qrdata,cam_out_buf.back())) || (cam_out_buf.empty() && strcmp(qrdata,cam_out_once)))
 					{	
 						cam_out_buf.push(qrdata);	 
@@ -486,8 +495,9 @@ void* image_processing(void* arg)
 	#ifdef show_image  
 		if(count==0)
 		{
-		//cvShowImage("MyVideo",dst[count]); 
-			imshow("MyVideo",img_merge);
+			cvShowImage("MyVideo",dst[count]); 
+			//imshow("MyVideo",img_merge);
+			//imshow("MyVideo",grey[count]);		
 			cvCreateTrackbar("cp_blk_size","MyVideo",&cp_blk_size,50,NULL);
 			cvCreateTrackbar("cp_blk_par","MyVideo",&cp_blk_par,100,NULL);
 			cvCreateTrackbar("blk_size","MyVideo",&blk_size,50,NULL);
@@ -524,7 +534,7 @@ void* server_fifo(void* arg)
 	double fifo_interval=0;
 	char no_qr_out[100];
 	memset(no_qr_out,0,sizeof(no_qr_out));
-	strcpy(no_qr_out,"no qr code\n");
+	strcpy(no_qr_out,"no qr code");
 	
 	memset(cam_out_once,0,sizeof(cam_out_once));
 	while(1)
@@ -551,11 +561,23 @@ void* server_fifo(void* arg)
 			cam_out_buf.pop();	
 			buf_is_empty = cam_out_buf.empty();
 			pthread_mutex_unlock(&img_cnt_mtx);
-			write(out_fd,cam_out_once,sizeof(cam_out_once));		
+			unsigned int i;
+			for(i=0;i<sizeof(cam_out_once);i++)
+			{
+				if(cam_out_once[i]==0) break;
+			}
+			write(out_fd,cam_out_once,i*sizeof(char));
+			cout<<cam_out_once<<endl;		
 		}
 		else
-			write(out_fd,no_qr_out,sizeof(no_qr_out));
-		
+		{
+			unsigned int i;
+			for(i=0;i<sizeof(no_qr_out);i++)
+			{
+				if(no_qr_out[i]==0) break;
+			}
+			write(out_fd,no_qr_out,10);
+		}
 		memset(svr_in_buf,0,sizeof(svr_in_buf));
 		cout<<"Retrieving server data..."<<endl;	
 		int rd_num = read(in_fd, svr_in_buf,sizeof(svr_in_buf));
@@ -721,7 +743,7 @@ int RunSingleCamera( PGRGuid guid )
         PrintError( error );
         return -1;
     }
-	 // Get the camera information
+	 // Get the camera formation
     CameraInfo camInfo;
     error = cam.GetCameraInfo(&camInfo);
     if (error != PGRERROR_OK)
@@ -761,10 +783,10 @@ int RunSingleCamera( PGRGuid guid )
 	fmt7ImageSettings.width = 640;
 	fmt7ImageSettings.height = 512;
 	*/
-	fmt7ImageSettings.offsetX = 160;
-	fmt7ImageSettings.offsetY = 128;
-	fmt7ImageSettings.width = 320;
-	fmt7ImageSettings.height = 256;
+	fmt7ImageSettings.offsetX = (640-PIXELS)/2;
+	fmt7ImageSettings.offsetY = (512-PIXELS)/2;
+	fmt7ImageSettings.width = PIXELS;
+	fmt7ImageSettings.height = PIXELS;
 	fmt7ImageSettings.pixelFormat = k_fmt7PixFmt;
     bool valid;
 	Format7PacketInfo fmt7PacketInfo;
@@ -797,7 +819,11 @@ int RunSingleCamera( PGRGuid guid )
 
 	prop.type = BRIGHTNESS;
 	prop.absControl = true;
+#ifdef calib_test
+	prop.absValue = 10.5;
+#else
 	prop.absValue = 2.5;
+#endif
 	error = cam.SetProperty(&prop);
 
 	prop.type = SHUTTER;
@@ -898,8 +924,8 @@ int RunSingleCamera( PGRGuid guid )
 			start=clock();
 			clock_gettime(CLOCK_MONOTONIC,&begin);
 		} 
-		if(0)
-		//if(tmp_decodeCnt>=image_interval || tmp_imageCnt>=1500)
+		//if(0)
+		if(tmp_decodeCnt>=image_interval || tmp_imageCnt>=1500)
 		{
 			finish=clock();
 			clock_gettime(CLOCK_MONOTONIC,&end);
@@ -911,7 +937,7 @@ int RunSingleCamera( PGRGuid guid )
 			pthread_mutex_lock(&printf_mtx);
 	
 			cout<< "Speed is "<< speed<<". Time is "<<cost_time<<". Rate is "<<(float)decodeCnt/(float)imageCnt<<endl;	
-			cout<< "Terminate the program?(y/n):";
+			cout<< "Terminate the program?(y/n):\n";
 			imageCnt=0;
 			decodeCnt=0;
 			stop[0]=waitKey(5000);					
